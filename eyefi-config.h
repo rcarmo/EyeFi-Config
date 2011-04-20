@@ -72,6 +72,7 @@ extern int fd_flush(int);
  * definitions shorter.
  */
 typedef unsigned int u32;
+typedef unsigned short u16;
 typedef unsigned char u8;
 
 #define os_memset memset
@@ -154,6 +155,15 @@ struct pascal_string {
 	u8 value[32];
 } __attribute__((packed));
 
+struct byte_response {
+	u8 response;
+};
+
+struct var_byte_response {
+	u8 len;
+	struct byte_response bytes[16383];
+};
+
 /*
  * The 'o' command has several sub-commands:
  */
@@ -166,15 +176,20 @@ enum card_info_subcommand {
 	UNKNOWN_6     = 6, // checksums
 	LOG_LEN	      = 7,
 	WLAN_ENABLED  = 10,
-	UNKNOWN_13    = 13, // Returns an ASCII SSID.  Last connected or
-			    // current WiFi network, maybe?
-			    //
-	
+	UPLOAD_PENDING= 11, // {0x1, STATE}
+	CONNECTED_TO  = 13, // Currently connected Wifi network
+	UPLOAD_STATUS = 14, // current uploading file info
+	UNKNOWN_15    = 15, // always returns {0x01, 0x1d} as far as I've seen
+	TRANSFER_MODE = 17,
+
+	ENDLESS	      = 27,
 	UNKNOWN_ff    = 0xff, // The D90 does this, and it looks to
 			      // return a 1-byte response length
 			      // followed by a number of 8-byte responses
 			      // But I've only ever seen a single response
 			      // [000]: 01 04 1d 00 18 56 aa d5 42 00 00 00 00 00 00 00
+			      // It could be a consolidates info command like "info for
+			      // everything" so the camera makes fewer calls.
 };
 
 // new code!!: 
@@ -183,9 +198,25 @@ enum card_info_subcommand {
 //00000010  00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00  |................|
 // that happens 3 seconds after the card goes into the D90
 
+// 
+// 1301001235/0002/REQM: 00000000  4f 0c 01 01 00 00 00 00  00 00 00 00 00 00 00 00  |O...............|
+// looks like it is setting the PC's IP address:
+// 1300998375/0013/REQM: 00000000  4f 06 0d 0a 31 30 2e 38  2e 30 2e 31 32 33 00 00  |O...10.8.0.123..|
+// 1300762293/0016/REQM: 00000000  4f 06 0d 0a 31 30 2e 36  2e 30 2e 31 32 33 00 00  |O...10.6.0.123..|
+// 1300762293/0015/REQM: 00000000  4f 06 0d 0a 31 30 2e 36  2e 30 2e 31 32 33 00 00  |O...10.6.0.123..|
+
+
 struct card_info_req {
 	u8 o;
 	u8 subcommand;
+} __attribute__((packed));
+
+struct card_config_cmd {
+	u8 O;
+	u8 subcommand;
+	union {
+		struct var_byte_response arg;
+	};
 } __attribute__((packed));
 
 struct card_info_rsp_key {
@@ -211,13 +242,11 @@ struct card_info_log_len {
 	be32 val;
 } __attribute__((packed));
 
-struct byte_response {
-	u8 response;
-};
-
-struct var_byte_response {
-	u8 len;
-	struct byte_response responses[0];
+// These go along with 'o' 17 aka. TRANSFER_MODE
+enum transfer_mode {
+	AUTO_TRANSFER = 0,
+	SELECTIVE_TRANSFER = 1,
+	SELECTIVE_SHARE = 2,
 };
 
 enum net_type {
@@ -310,13 +339,30 @@ struct rest_log_response {
 	u8 data[EYEFI_BUF_SIZE];
 } __attribute__((packed));
 
+struct upload_status {
+	u8 len;
+	be32 http_len;
+	be32 http_done;
+	// There are two strings in here:
+	// 1. filename on the card
+	// \0
+	// 2. directory on the card where it was found
+	// \0
+	u8 string[0];
+}  __attribute__((packed));
+
 /*
  * Functions that are exported from eyefi-config.c
  */
 u32 fetch_log_length(void);
 int card_info_cmd(enum card_info_subcommand cmd);
+int card_config_set(enum card_info_subcommand cmd, struct var_byte_response *args);
 void *eyefi_response(void);
 struct card_info_rsp_key *fetch_card_key(void);
+int wlan_enabled(void);
+void wlan_disable(int do_disable);
+enum transfer_mode fetch_transfer_mode(void);
+void set_transfer_mode(enum transfer_mode);
 struct scanned_net_list *scan_nets(void);
 const char *net_type_name(u8 type);
 struct configured_net_list *fetch_configured_nets(void);
@@ -330,6 +376,11 @@ void init_card(void);
 void add_network(char *essid, char *ascii_password);
 void remove_network(char *essid);
 struct card_firmware_info *fetch_card_firmware_info(void);
+
+int set_endless_percentage(int __percentage);
+int endless_enable(int enable);
+void print_endless(void);
+
 /*
  * Only used by the unix variants
  */
